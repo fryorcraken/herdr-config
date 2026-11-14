@@ -1,0 +1,4 @@
+# Written by herdr into each mod folder; regenerated on every start.
+gpui-kit.d.ts
+# A mod's last load error.
+*.error
