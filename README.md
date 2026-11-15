@@ -17,7 +17,9 @@ My [herdr](https://github.com/herdrdev/herdr-app) customisation: the `my-main` l
 ./install.sh
 ```
 
-It symlinks each path above into `~/.config/herdr-app` (or `$HERDR_APP_HOME`). What was there is moved to `<name>.before-herdr-config`, not deleted.
+It symlinks each path above into `~/.config/herdr-app` (or `$HERDR_APP_HOME`). What was there is kept in `~/.config/herdr-app/.before-herdr-config/`, not deleted. Running it again changes nothing.
+
+Note it links `keys.json` and `settings.json` too: take those only if you want my bindings and settings.
 
 Links are safe across saves: herdr resolves symlinks before its atomic writes, and finds a mod through a linked folder. Herdr updates only replace the mods and layouts it ships, never `my-*`.
 
@@ -26,3 +28,9 @@ Not here, because herdr owns them: the shipped mods, themes and icons, `*.d.ts` 
 ## Remotes
 
 `origin` is GitHub (`fryorcraken/herdr-config`), `rad` is Radicle. Push to both.
+
+## Licence
+
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
+
+`mods/my-agents` and `mods/my-tabs` started as copies of herdr's `agents` and `tabs` mods, which are Apache-2.0 ([herdrdev/herdr-app](https://github.com/herdrdev/herdr-app)). The parts that came from herdr stay under Apache-2.0.

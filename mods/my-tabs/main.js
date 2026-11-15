@@ -1,3 +1,4 @@
+// Changed from herdr's `tabs` mod (Apache-2.0, https://github.com/herdrdev/herdr-app) by fryorcraken.
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings, home } from "herdr";
