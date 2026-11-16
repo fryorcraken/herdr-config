@@ -83,6 +83,9 @@ const alphaKey = (s) => (s ?? "").toLowerCase().replace(/[^\p{L}\p{N} ]/gu, "").
 // "alpha" was briefly a grouping of its own, meaning by space, A to Z.
 // personal: agents whose session takes "/rename <name>" (that name is what their resume list shows).
 const RENAMES = new Set(["claude", "opencode"]);
+// personal: a terminal's own name, kept as a label on it (gone when it ends). Renaming a row that
+// shares its tab sets it, so the tab's name, which the tab's other rows read, stays as it was.
+const NAME = "my-agents.name";
 const sortOf = () => SORTS.find((s) => s.id === (shared("agents.sort") === "alpha" ? "grouped" : shared("agents.sort"))) ?? SORTS[0];
 // Unset: what each grouping did before there was a choice (status: recent first; space: tab order).
 const orderOf = () => ORDERS.find((o) => o.id === (shared("my-agents.order") ?? (shared("agents.sort") === "alpha" ? "alpha" : sortOf().id === "priority" ? "recent" : "tab"))) ?? ORDERS.find((o) => o.id === "recent");
@@ -399,12 +402,19 @@ export default class Agents extends View {
   }
 
   // personal: renames what a row is. Claude Code and OpenCode get "/rename <name>" typed into
-  // their session, so the name sticks to the session itself; anything else renames its tab.
+  // their session, so the name sticks to the session itself. A row that reads as its tab's name
+  // renames its tab. One sharing its tab (a shell beside an agent) gets a name of its own (NAME),
+  // so the other rows in that tab keep theirs.
   rename(a) {
-    if (!RENAMES.has(a.program?.key)) return run("tab.rename", { id: a.tab });
-    const now = clean(a.title);
+    if (RENAMES.has(a.program?.key)) {
+      const now = clean(a.title);
+      return openOverlay({ mod: "my-agents", kind: "dialog", width: 420, height: 196,
+        props: { rename: { address: a.address, program: a.program.name, value: now && now !== a.program.name ? now : "" } } });
+    }
+    const own = this.names?.get(a.address);
+    if (!own && this.ownsTab?.has(a.address)) return run("tab.rename", { id: a.tab });
     openOverlay({ mod: "my-agents", kind: "dialog", width: 420, height: 196,
-      props: { rename: { address: a.address, program: a.program.name, value: now && now !== a.program.name ? now : "" } } });
+      props: { rename: { address: a.address, program: a.program?.name || "terminal", value: own ?? "", label: true } } });
   }
 
   initRename(cx) {
@@ -421,15 +431,21 @@ export default class Agents extends View {
   submitRename() {
     const p = props(), r = p.rename, name = this.text.trim();
     closeOverlay(p.overlay);
+    const failed = (res) => {
+      if (res.code !== 0) notify({ title: "Rename failed", body: (res.stderr || res.stdout).trim(), level: "error" });
+    };
+    // personal: a terminal's own name; emptied, the row reads as it did before it had one.
+    if (r.label) {
+      if (name || r.value) hc(["label", r.address, `${NAME}=${name}`]).then(failed);
+      return;
+    }
     if (!name) return;
     // Typed mid-turn it would land as a message; a blocked agent, hc refuses on its own.
     if (agents().find((x) => x.address === r.address)?.status === "working") {
       notify({ title: "Not renamed", body: `${r.program} is working. Rename it once it stops.`, level: "warning" });
       return;
     }
-    hc(["send", r.address, `/rename ${name}`]).then((res) => {
-      if (res.code !== 0) notify({ title: "Rename failed", body: (res.stderr || res.stdout).trim(), level: "error" });
-    });
+    hc(["send", r.address, `/rename ${name}`]).then(failed);
   }
 
   renameDialog(t) {
@@ -441,7 +457,7 @@ export default class Agents extends View {
     return v_flex().id("rename").track_focus(this.handle)
       .on_key_down((e, cx) => { if (e.key === "escape") { closeOverlay(p.overlay); cx.stop_propagation(); } })
       .w_full().min_h(0).p(18).bg(t.popover).text_color(t.foreground)
-      .child(h_flex().items_center().child(div().flex_1().text_size(15).font_semibold().child(`Rename ${p.rename.program} session`))
+      .child(h_flex().items_center().child(div().flex_1().text_size(15).font_semibold().child(p.rename.label ? `Rename ${p.rename.program}` : `Rename ${p.rename.program} session`))
         .child(div().text_size(11).text_color(t.dim).child("Esc")))
       .child(div().pt(16).pb(7).text_size(11.5).text_color(t.dim).child("Name"))
       .child(Input.new(this.input).h(36).px(10).rounded(9).border_1().border_color(t.accent).bg(t.background).text_size(12.8).text_color(t.foreground))
@@ -595,13 +611,21 @@ export default class Agents extends View {
     // otherwise read the same.
     const leads = leadPanes(paneList);
     const tabs = new Map([...place].map(([id, o]) => [id, o.tb]));
+    // personal: a terminal's own name (see rename) comes first; ownsTab: rows that read as their
+    // tab's name when it has one, so renaming them renames the tab.
+    this.names = new Map(all.filter((x) => x.labels?.[NAME]).map((x) => [x.address, x.labels[NAME]]));
+    const ownsTab = new Set();
+    this.ownsTab = ownsTab;
     const labels = new Map(list.map(a => {
+      const own = this.names.get(a.address);
+      if (own) return [a.address, own];
       const tab = tabs.get(a.tab);
       // personal: a shell reads as its tab's name if someone named it, else its folder.
       // Something other than the shell running in it (vim, a server) reads "<program> · <folder>".
       const dir = where(a.cwd), busy = a.program && !a.program.shell ? a.program.name : null;
       // A named tab's name only when the shell is alone in it, so split panes don't all read the same.
       const alone = paneList.filter((p) => p.tab === a.tab && p.terminal).length === 1;
+      if (a.shell ? alone : tabCounts.get(a.tab) === 1) ownsTab.add(a.address);
       if (a.shell) return [a.address, tab?.named && alone ? tab.name : busy && dir ? `${busy} · ${dir}` : busy ?? dir ?? "shell"];
       const many = tabCounts.get(a.tab) > 1;
       return [a.address, tab ? title(many ? { ...tab, named: false } : tab, many ? a : leads.get(a.tab)) : (a.title || a.program?.name || "")];
