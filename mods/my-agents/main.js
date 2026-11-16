@@ -128,6 +128,9 @@ function avatar(t, id, name, size) {
     .child([...(name ?? "")][0]?.toUpperCase() ?? "?");
 }
 
+// personal: on a row's own buttons, so a double click there doesn't also reach the row (which renames).
+const stopDown = (_e, cx) => cx.stop_propagation();
+
 // The agent's icon from the app's program table: a one-color glyph or a picture.
 function icon(p, size, color) {
   if (!p?.icon) return null;
@@ -333,6 +336,7 @@ export default class Agents extends View {
       .cursor_pointer()
       .hover((s) => s.bg(t.hover))
       .tooltip([prLine(p), ...others.map(prLine)].join("\n"))
+      .on_mouse_down("left", stopDown)
       .on_click((_e, cx) => {
         cx.stop_propagation();
         cx.open_url(p.url);
@@ -576,6 +580,7 @@ export default class Agents extends View {
         .text_color(open ? t.dim : (t[top] ?? t.dim))
         .cursor_pointer()
         .hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .on_mouse_down("left", stopDown)
         .on_click((_e, cx) => {
           cx.stop_propagation();
           open ? this.folded.add(a.address) : this.folded.delete(a.address);
@@ -672,6 +677,7 @@ export default class Agents extends View {
         .cursor_pointer()
         .hover((s) => s.bg(t.hover).text_color(t.foreground))
         .tooltip(isPinned ? "Unpin" : "Pin to the top")
+        .on_mouse_down("left", stopDown)
         .on_click((_e, cx) => {
           cx.stop_propagation();
           run("terminal.pin", { terminal: a.address, pinned: !isPinned });
@@ -704,7 +710,7 @@ export default class Agents extends View {
         .on_click(() => run("pane.focus", { pane: a.pane }))
         .on_mouse_down("left", (e) => { if (e.click_count === 2) this.rename(a); }) // personal: double click renames
         .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)
-          .when(subs.length > 0, el => el.on_click((_e, cx) => {
+          .when(subs.length > 0, el => el.on_mouse_down("left", stopDown).on_click((_e, cx) => {
             cx.stop_propagation();
             this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address);
             cx.notify();

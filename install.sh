@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Links this repo's files into herdr's config folder.
 #   ./install.sh         link everything
-#   ./install.sh --dry   say what it would do, change nothing
+#   ./install.sh --dry   say what it would do, change nothing (also -d, --dry-run, -n)
 # Anything already there that isn't the right link is kept in
 # <config>/.before-herdr-config/, never deleted. Safe to run again.
 set -euo pipefail
@@ -11,7 +11,15 @@ DEST=${HERDR_APP_HOME:-$HOME/.config/herdr-app}
 # Outside mods/ and layouts/: herdr would load a kept mod folder as a mod.
 KEEP="$DEST/.before-herdr-config"
 DRY=false
-[ "${1:-}" = "--dry" ] || [ "${1:-}" = "-d" ] && DRY=true
+# Anything it doesn't know stops it: a mistyped dry run mustn't install.
+usage() { echo "usage: $0 [--dry]   (--dry, -d, --dry-run, -n: say what it would do, change nothing)"; }
+[ $# -le 1 ] || { usage >&2; exit 2; }
+case "${1:-}" in
+  "") ;;
+  --dry | -d | --dry-run | -n) DRY=true ;;
+  -h | --help) usage; exit 0 ;;
+  *) usage >&2; exit 2 ;;
+esac
 
 # Mod folders are linked whole, so a new file in a mod needs no change here.
 ITEMS="

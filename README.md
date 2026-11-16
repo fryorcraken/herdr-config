@@ -42,8 +42,10 @@ opened, colored by state: green for open, grey for draft, purple for merged, red
 for closed. A red dot means an open PR's checks are failing. Hover over the icon
 for the PR's number and title, or click it to open the PR.
 `mods/my-agents/prs.py` works this out every 90 s from Claude Code's session
-files, with one `gh api graphql` request. So it needs `gh` logged in. OpenCode
-sessions get no badge yet.
+files, with one `gh api graphql` request. So it needs `gh` logged in. When
+GitHub or `hc` doesn't answer, the badges stay as they were; a PR GitHub can't
+find (repo gone, no access) loses only its own badge. OpenCode sessions get no
+badge yet.
 
 ## Worktrees
 

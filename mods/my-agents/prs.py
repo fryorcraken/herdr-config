@@ -17,9 +17,31 @@ HOME = os.path.expanduser("~")
 CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")), "herdr-config", "pr-links.json")
 
 
-def run(*argv, timeout=30):
-    r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-    return r.stdout if r.returncode == 0 else ""
+def run(*argv, timeout=30, any_exit=False):
+    """Its stdout, or "" when it failed. any_exit: stdout whatever the exit code (gh exits 1
+    when one part of a GraphQL query fails, and still prints the rest)."""
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return r.stdout if r.returncode == 0 or any_exit else ""
+
+
+# The scan cache, saved now and then while scanning, so a run the sidebar cuts short
+# (it waits 60 s) keeps what it read. Its own temp name: two herdr windows run this at once.
+SAVE_EVERY = 10
+_saved_at = time.monotonic()
+USED = set()  # session files looked at this run
+
+
+def save(cache):
+    global _saved_at
+    os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+    tmp = f"{CACHE}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(cache, f)
+    os.replace(tmp, CACHE)
+    _saved_at = time.monotonic()
 
 
 def clean(s):
@@ -36,8 +58,11 @@ def scan(path, cache):
     st = os.stat(path)
     key = f"{st.st_size}:{st.st_mtime_ns}"
     hit = cache.get(path)
+    USED.add(path)
     if hit and hit["key"] == key:
         return hit["custom"], hit["ai"], [tuple(p) for p in hit["prs"]]
+    if time.monotonic() - _saved_at > SAVE_EVERY:
+        save(cache)
     custom = ai = None
     prs = []
     with open(path, encoding="utf8", errors="replace") as f:
@@ -121,8 +146,14 @@ def states(prs):
     for i, (repo, num) in enumerate(prs):
         owner, name = repo.split("/", 1)
         parts.append(QUERY_PR % (f"p{i}", json.dumps(owner), json.dumps(name), num))
-    out = run("gh", "api", "graphql", "-f", "query={" + "\n".join(parts) + "}")
-    data = (json.loads(out) if out else {}).get("data") or {}
+    out = run("gh", "api", "graphql", "-f", "query={" + "\n".join(parts) + "}", any_exit=True)
+    try:
+        data = json.loads(out).get("data") if out else None
+    except ValueError:
+        data = None
+    if not isinstance(data, dict):
+        return None  # no answer at all (offline, logged out): not the same as no PRs
+    # A PR GitHub can't find (repo gone, no access) is null here; the others are still good.
     res = {}
     for i, (repo, num) in enumerate(prs):
         pr = ((data.get(f"p{i}") or {}).get("pullRequest")) or {}
@@ -142,7 +173,12 @@ def main():
             cache = json.load(f)
     except (OSError, ValueError):
         cache = {}
-    ls = json.loads(run("hc", "ls", "--json") or '{"terminals": []}')
+    # A failed run exits non-zero: the sidebar then keeps the badges it has, rather than
+    # taking an empty answer as every PR gone.
+    out = run("hc", "ls", "--json")
+    if not out:
+        sys.exit("prs.py: hc ls failed")
+    ls = json.loads(out)
     found = {}
     for t in ls.get("terminals", []):
         if t.get("agent") != "claude-code" or "/" in t["address"]:
@@ -153,12 +189,12 @@ def main():
             prs = scan(path, cache)[2]
             if prs:
                 found[t["address"]] = prs
+    # Only the session files this run looked at: the rest are sessions that ended.
+    save({p: v for p, v in cache.items() if p in USED})
     live = {p for prs in found.values() for p in prs}
     info = states(sorted(live))
-    os.makedirs(os.path.dirname(CACHE), exist_ok=True)
-    with open(CACHE + ".tmp", "w") as f:
-        json.dump(cache, f)
-    os.replace(CACHE + ".tmp", CACHE)
+    if info is None:
+        sys.exit("prs.py: GitHub didn't answer")
     json.dump({a: [info[p] for p in prs if p in info] for a, prs in found.items()}, sys.stdout)
 
 
