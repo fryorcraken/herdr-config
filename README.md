@@ -33,7 +33,7 @@ Not here, because herdr owns them: the shipped mods, themes and icons, `*.d.ts` 
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
 
-`mods/my-agents` and `mods/my-tabs` started as copies of herdr's `agents` and `tabs` mods, which are Apache-2.0 ([herdrdev/herdr-app](https://github.com/herdrdev/herdr-app)). The parts that came from herdr stay under Apache-2.0.
+`mods/my-agents` and `mods/my-tabs` started as copies of herdr's `agents` and `tabs` mods, which are Apache-2.0 ([herdrdev/herdr-app](https://github.com/herdrdev/herdr-app)). `mods/my-agents` also takes its worktree test and space avatars from herdr's `spaces` mod. The parts that came from herdr stay under Apache-2.0.
 
 ## PR badge
 
@@ -44,3 +44,17 @@ for the PR's number and title, or click it to open the PR.
 `mods/my-agents/prs.py` works this out every 90 s from Claude Code's session
 files, with one `gh api graphql` request. So it needs `gh` logged in. OpenCode
 sessions get no badge yet.
+
+## Worktrees
+
+Grouped by space, a worktree space goes under the space of its main checkout,
+as herdr's Spaces list nests it: each worktree's rows sit under a line with a
+branch icon and its name. It's the Spaces list's own test, git's
+`--git-common-dir` for each space's folder, so the two lists agree. A worktree
+whose main checkout has no space keeps a header of its own.
+
+The Status order puts rows that need you first, then the done ones you haven't
+looked at (blue dot), then working, then idle; ties keep tab order. Under a
+space it sorts the space's rows and its worktrees' together, and the worktree
+lines follow the rows, so a worktree that needs you comes first. The space's own
+rows, when they come after a worktree's, get a line with the space's avatar.

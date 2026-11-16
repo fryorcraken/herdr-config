@@ -1,6 +1,8 @@
 // Changed from herdr's `agents` mod (Apache-2.0, https://github.com/herdrdev/herdr-app) by fryorcraken.
+// The worktree test and space avatars follow herdr's `spaces` mod (same licence).
 // Agents in grouped or priority views; parents take their most urgent sub-agent's place.
-// A viewed done agent stays in Done until left.
+// A viewed done agent stays in Done until left. personal: grouped by space, worktree spaces
+// nest under their main checkout's, as the Spaces list draws them.
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
@@ -56,6 +58,7 @@ function title(tab, l) {
   return (tab.name === prog || !tab.named) && telling ? live : tab.name;
 }
 const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
+const STATUS_AT = { 4: "blocked", 3: "done", 2: "working", 1: "idle" };
 // A sub-agent without a pane isn't in agents(): its raw word, error counting as
 // blocked. It's never done: it reports to its parent, and the parent's done is the news.
 const kidStatus = (k, listed) => {
@@ -68,6 +71,8 @@ const SORTS = [
 ];
 // personal: how rows are ordered inside a group, apart from how they're grouped.
 const ORDERS = [
+  // Needs you, then done (unread), working, idle; ties in tab order. Worktrees follow the rows.
+  { id: "status", label: "Status" },
   { id: "recent", label: "Recent activity" },
   { id: "tab", label: "Tab order" },
   // Picking it also puts each space's tabs in that order, once.
@@ -80,7 +85,7 @@ const alphaKey = (s) => (s ?? "").toLowerCase().replace(/[^\p{L}\p{N} ]/gu, "").
 const RENAMES = new Set(["claude", "opencode"]);
 const sortOf = () => SORTS.find((s) => s.id === (shared("agents.sort") === "alpha" ? "grouped" : shared("agents.sort"))) ?? SORTS[0];
 // Unset: what each grouping did before there was a choice (status: recent first; space: tab order).
-const orderOf = () => ORDERS.find((o) => o.id === (shared("my-agents.order") ?? (shared("agents.sort") === "alpha" ? "alpha" : sortOf().id === "priority" ? "recent" : "tab"))) ?? ORDERS[0];
+const orderOf = () => ORDERS.find((o) => o.id === (shared("my-agents.order") ?? (shared("agents.sort") === "alpha" ? "alpha" : sortOf().id === "priority" ? "recent" : "tab"))) ?? ORDERS.find((o) => o.id === "recent");
 const SECTION = { 4: "Needs you", 3: "Done", 2: "Working", 1: "Idle" };
 const SECTION_STATUS = { 4: "blocked", 3: "done", 2: "working" };
 
@@ -101,6 +106,27 @@ const CHECKS_WORD = { SUCCESS: "checks pass", FAILURE: "checks fail", ERROR: "ch
 // The PR a row shows: its newest open one, else its newest merged one, else its newest.
 const mainPr = (prs) => { const r = [...prs].reverse(); return r.find((p) => p.state === "OPEN") ?? r.find((p) => p.state === "MERGED") ?? r[0]; };
 const prLine = (p) => [`${p.repo}#${p.number}`, p.draft && p.state === "OPEN" ? "draft" : PR_WORD[p.state] ?? p.state.toLowerCase(), p.state === "OPEN" && CHECKS_WORD[p.checks], p.title].filter(Boolean).join(" · ");
+
+// personal: worktree spaces go under their main checkout's space, as the Spaces list nests them.
+// Where a space is now, as that list reads it: its first terminal's live folder, else where it
+// was made; with its machine, so one path on two machines is two places. Null: nowhere yet.
+function spotOf(s, ps) {
+  const tabs = new Set((s.tabs ?? []).map((c) => c.id));
+  const at = ps.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder;
+  return at ? JSON.stringify([s.machine ?? null, at]) : null;
+}
+const GIT_AT_ONCE = 4;
+const WT_INDENT = 12; // px a worktree's rows sit right of its line
+const GIT_RETRY = 60000; // a place git couldn't answer for (a machine away) is asked again after this
+
+// personal: a space's avatar as the Spaces list draws it: its stored color, its first letter.
+const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
+function avatar(t, id, name, size) {
+  const c = (shared("space.colors") ?? {})[id] ?? "ansi6";
+  return h_flex().size(size).flex_none().rounded(4).bg(c.startsWith("#") ? c : (MARK[c] ?? t[c] ?? MARK.ansi6))
+    .items_center().justify_center().text_size(Math.round(size * 0.6)).font_bold().text_color("#ffffff")
+    .child([...(name ?? "")][0]?.toUpperCase() ?? "?");
+}
 
 // The agent's icon from the app's program table: a one-color glyph or a picture.
 function icon(p, size, color) {
@@ -126,6 +152,14 @@ export default class Agents extends View {
       this.loadPrs(cx);
       cx.timer.every(PR_EVERY, (cx) => this.loadPrs(cx));
     }
+    // personal: which repo each space's place is in (see families). Render lists the places it
+    // has no answer for; this asks git. The last answer per space is kept across restarts, so
+    // worktrees start nested; every place is asked again once all the same.
+    this.git = {}; // place -> { repo, linked }, null: not a repo
+    this.failed = {}; // place -> when git last couldn't answer
+    this.wanted = new Set();
+    try { this.lastGit = JSON.parse(localStorage.getItem("git") ?? "{}") ?? {}; } catch { this.lastGit = {}; }
+    cx.timer.every(300, (cx) => this.lookGit(cx));
     // keys.json: "my-agents.next_blocked" / "my-agents.prev_blocked" jump between agents that
     // need you (blocked), in the order this list shows them, wrapping around.
     cx.spawn(async (cx) => {
@@ -206,6 +240,79 @@ export default class Agents extends View {
       })
       .catch((e) => console.error("my-agents: prs.py", String(e)))
       .finally(() => { this.prsLoading = false; });
+  }
+
+  // personal: asks git about the places render had no answer for, a few at a time, one round at a time.
+  lookGit(cx) {
+    if (this.gitLooking) return;
+    const now = Date.now();
+    const keys = [...this.wanted].filter((k) => !(k in this.git) && now - (this.failed[k] ?? 0) > GIT_RETRY);
+    if (!keys.length) return;
+    this.gitLooking = true;
+    cx.spawn(async (cx) => {
+      let next = 0;
+      try {
+        await Promise.all(Array.from({ length: Math.min(GIT_AT_ONCE, keys.length) }, async () => {
+          while (next < keys.length) await this.checkGit(keys[next++]);
+        }));
+      } finally { this.gitLooking = false; }
+      cx.notify();
+    });
+  }
+
+  // The same two reads as the Spaces list: a worktree's top folder isn't where its repo's .git is.
+  async checkGit(key) {
+    const [on, cwd] = JSON.parse(key);
+    try {
+      const [top, common] = await Promise.all([
+        exec("git", ["rev-parse", "--path-format=absolute", "--show-toplevel"], { cwd, on }),
+        exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, on }),
+      ]);
+      if (top.code === 0 && common.code === 0) {
+        const dir = top.stdout.replace(/\n$/, ""), repo = common.stdout.replace(/\n$/, "");
+        this.git[key] = { repo: JSON.stringify([on, repo]), linked: repo !== `${dir}/.git` };
+        delete this.failed[key];
+      } else if (/not a git repository/i.test(top.code !== 0 ? top.stderr : common.stderr)) this.git[key] = null;
+      else this.failed[key] = Date.now();
+    } catch {
+      this.failed[key] = Date.now();
+    }
+  }
+
+  // Space id -> the space whose header its rows go under: a worktree's, the first space that is its
+  // repo's main checkout, as the Spaces list nests it; anything else, itself (a worktree too, while
+  // its main checkout has no space). A place git hasn't answered for yet keeps the space's last answer.
+  families(sp, ps) {
+    const info = new Map(), live = new Set();
+    let dirty = false;
+    this.wanted = new Set();
+    for (const s of sp) {
+      const k = spotOf(s, ps);
+      if (k) live.add(k);
+      if (k && k in this.git) {
+        const g = this.git[k];
+        info.set(s.id, g);
+        if (JSON.stringify(this.lastGit[s.id] ?? null) !== JSON.stringify(g)) { this.lastGit[s.id] = g; dirty = true; }
+      } else {
+        if (k) this.wanted.add(k);
+        info.set(s.id, this.lastGit[s.id] ?? null);
+      }
+    }
+    for (const k of Object.keys(this.git)) if (!live.has(k)) delete this.git[k];
+    for (const k of Object.keys(this.failed)) if (!live.has(k)) delete this.failed[k];
+    // No spaces at all is a layout still loading, not every space closed.
+    const ids = new Set(sp.map((s) => s.id));
+    if (ids.size) for (const id of Object.keys(this.lastGit)) if (!ids.has(id)) { delete this.lastGit[id]; dirty = true; }
+    if (dirty) localStorage.setItem("git", JSON.stringify(this.lastGit));
+    const mains = new Map();
+    for (const s of sp) {
+      const g = info.get(s.id);
+      if (g && !g.linked && !mains.has(g.repo)) mains.set(g.repo, s.id);
+    }
+    return new Map(sp.map((s) => {
+      const g = info.get(s.id);
+      return [s.id, (g?.linked && mains.get(g.repo)) || s.id];
+    }));
   }
 
   // The row's PR icon, colored by state; a red dot when an open PR's checks fail. Clicking opens it.
@@ -355,14 +462,14 @@ export default class Agents extends View {
     });
   }
 
-  subRow(t, s, shown, compact) {
+  subRow(t, s, shown, compact, indent = 0) {
     const k = s.t;
     const st = kidStatus(k, this.listed);
     const pic = icon(k.program, 14, t.foreground);
     const on = k.address === shown;
     return h_flex()
       .id(`sub-${k.address}`)
-      .pl(39)
+      .pl(39 + indent)
       .pr(8)
       .rounded(8)
       .h(26)
@@ -410,7 +517,12 @@ export default class Agents extends View {
     const paneList = panes();
     // personal: every terminal pane that isn't an agent (a shell, or an agent that exited and
     // left its shell) is listed too, so a pane doesn't drop out of the list between two agents.
-    const place = new Map(spaces().flatMap((s, si) => s.tabs.map((tb, ti) => [tb.id, { s, si, ti, tb }])));
+    const sp = spaces();
+    const place = new Map(sp.flatMap((s, si) => s.tabs.map((tb, ti) => [tb.id, { s, si, ti, tb }])));
+    // personal: a worktree space's rows go under its main checkout's space (see families).
+    const topOf = this.families(sp, paneList);
+    const spaceBy = new Map(sp.map((s, i) => [s.id, { s, i }]));
+    const topSpace = (a) => topOf.get(a.space) ?? a.space;
     const isAgent = new Set(real.map((a) => a.address));
     const pinnedT = new Set(all.filter((x) => x.labels?.["herdr.pinned"]).map((x) => x.address));
     const shells = paneList.filter((p) => p.terminal && !isAgent.has(p.terminal) && place.has(p.tab)).map((p) => {
@@ -418,11 +530,15 @@ export default class Agents extends View {
       return { address: p.terminal, pane: p.pane, space: s.id, space_name: s.name, tab: p.tab, tab_index: tb.index, tab_name: tb.name,
         status: null, app: null, program: p.program, title: p.title, seq: 0, pinned: pinnedT.has(p.terminal), focused: p.focused, shell: true, cwd: p.cwd };
     });
-    // Space, tab, pane order, as agents() is, so a space's rows stay together.
+    // Space, tab, pane order, as agents() is, so a space's rows stay together. personal: by the
+    // space a row goes under first, its own rows before its worktrees', so those stay together too.
     const paneAt = new Map(paneList.map((p, i) => [p.pane, i]));
-    const pos = (a) => { const o = place.get(a.tab); return [o?.si ?? 1e9, o?.ti ?? 1e9, paneAt.get(a.pane) ?? 1e9]; };
+    const pos = (a) => {
+      const o = place.get(a.tab), top = topSpace(a);
+      return [spaceBy.get(top)?.i ?? 1e9, top === a.space ? -1 : o?.si ?? 1e9, o?.ti ?? 1e9, paneAt.get(a.pane) ?? 1e9];
+    };
     let list = [...real, ...shells].map((a) => [pos(a), a])
-      .sort(([x], [y]) => x[0] - y[0] || x[1] - y[1] || x[2] - y[2]).map(([, a]) => a);
+      .sort(([x], [y]) => x[0] - y[0] || x[1] - y[1] || x[2] - y[2] || x[3] - y[3]).map(([, a]) => a);
     // A kept sub-agent (one with a pane) is in agents() too: where a tree shows
     // it, it gets no row of its own, unless it's pinned.
     const nested = new Set(collapsed ? [] : list.flatMap((a) => this.tree(all, a.address).map((s) => s.t.address)));
@@ -432,12 +548,15 @@ export default class Agents extends View {
     const byPriority = sort.id === "priority";
     const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), ...this.tree(all, a.address).map((s) => RANK[kidStatus(s.t, this.listed)] ?? 0))]));
     const rankOf = (a) => urgency.get(a.address);
+    // personal: a folded line's marker, as the sort sees its rows: sub-agents and a held done count.
+    const topStatus = (members) => STATUS_AT[Math.max(0, ...members.map((a) => rankOf(a) || 0))] ?? null;
 
-    const withKids = (a, i) => {
+    // indent: personal, a worktree's rows sit a little right of its line (see checkouts).
+    const withKids = (a, i, indent = 0) => {
       const subs = collapsed ? [] : this.tree(all, a.address);
-      const r = row(a, i, subs);
+      const r = row(a, i, subs, indent);
       if (this.folded.has(a.address)) return [r];
-      return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority))];
+      return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority, indent))];
     };
 
     // The fold chevron; folded, the count too, colored by the most urgent one.
@@ -497,6 +616,8 @@ export default class Agents extends View {
     const keys = new Map(list.map((a) => [a.address, alphaKey(byPriority ? `${a.space_name} ${shownName(a)}` : shownName(a))]));
     const within = order === "alpha" ? (x, y) => { const p = keys.get(x.address), q = keys.get(y.address); return p < q ? -1 : p > q ? 1 : 0; }
       : order === "recent" ? (x, y) => this.since(y) - this.since(x) || y.seq - x.seq
+      // Ties keep tab order, so one worktree's rows of a kind stay together.
+      : order === "status" ? (x, y) => (rankOf(y) || RANK.idle) - (rankOf(x) || RANK.idle)
       : () => 0; // tab order: the list is in it already, and the sort keeps ties in place
     list = [...list].sort((x, y) => (byPriority ? (rankOf(y) || RANK.idle) - (rankOf(x) || RANK.idle) : pos(x)[0] - pos(y)[0]) || within(x, y));
     // personal: picking A to Z (a new stamp) puts each space's tabs in that order, once.
@@ -520,7 +641,7 @@ export default class Agents extends View {
     this.rows = new Map(list.map((a) => [a.address, a]));
     this.order = list.map((a) => a.address);
 
-    const row = (a, i, subs = []) => {
+    const row = (a, i, subs = [], indent = 0) => {
       const pic = icon(a.program, 16, t.foreground);
       const more = detail.get(a.address);
       // An agent on another machine (`vps/t7`) says which.
@@ -565,7 +686,8 @@ export default class Agents extends View {
       const name = full ? a.space_name || label(a) : more ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
       return h_flex()
         .id(`ag-${a.address}`)
-        .px(8)
+        .pl(8 + indent)
+        .pr(8)
         .h(30)
         .flex_none()
         .rounded(8)
@@ -599,20 +721,70 @@ export default class Agents extends View {
         .child(this.status(t, a, byPriority && !isPinned));
     };
 
-    // Groups in list order: spaces (grouped) or priority sections. Agents of a
-    // space are next to each other in agents(), so neighbours make a group.
+    // Groups in list order: spaces (grouped) or priority sections. The list is
+    // sorted by space (personal: the one a row goes under) first, so neighbours make a group.
     const groups = pinned.length ? [{ id: "pinned", label: "Pinned", status: null, members: pinned }] : [];
     for (const a of rest) {
       const r = rankOf(a) || RANK.idle;
-      const id = byPriority ? `sec-${r}` : `sp-${a.space}`;
+      const top = byPriority ? null : topSpace(a);
+      const id = byPriority ? `sec-${r}` : `sp-${top}`;
       if (groups.at(-1)?.id === id) groups.at(-1).members.push(a);
-      else groups.push({ id, label: byPriority ? SECTION[r] : a.space_name || "", status: byPriority ? SECTION_STATUS[r] : null, members: [a] });
+      else groups.push({ id, top, label: byPriority ? SECTION[r] : spaceBy.get(top)?.s.name || a.space_name || "", status: byPriority ? SECTION_STATUS[r] : null, members: [a] });
     }
+
+    // personal: under a space's header, rows from one of its worktrees go under a line naming it, the
+    // way the Spaces list draws a worktree. The line follows the rows: whatever the order, each run
+    // of one checkout's rows gets one, except the space's own rows when they come first. Its own
+    // rows after a worktree's get a line with the space's avatar. A line folds that checkout's rows.
+    const checkout = (g, run, n) => {
+      const key = `wt-${run.space}`, open = !this.folded.has(key);
+      const s = spaceBy.get(run.space)?.s, name = s?.name ?? run.members[0].space_name ?? "";
+      const top = topStatus(run.members);
+      return h_flex()
+        .id(`${key}-${n}`)
+        .px(8)
+        .h(24)
+        .flex_none()
+        .gap(9)
+        .items_center()
+        .text_size(11.5)
+        .font_medium()
+        .text_color(t.dim)
+        .cursor_pointer()
+        .hover((s) => s.text_color(t.foreground))
+        .on_click((_e, cx) => {
+          open ? this.folded.add(key) : this.folded.delete(key);
+          cx.notify();
+        })
+        // In the rows' icon column, so the name lines up with theirs.
+        .child(h_flex().w(16).flex_none().justify_center()
+          .child(run.space === g.top ? avatar(t, run.space, name, 13) : svg("mods/workspace-chrome/branch.svg").size(12).flex_none()))
+        .child(div().min_w(0).truncate().child(name))
+        .when(!open, (el) => el.child(div().child(String(run.members.length))))
+        .child(div().flex_1())
+        .when(!open, (el) => el
+          .when(Boolean(top) && top !== "idle", (el) => el.child(this.status(t, { status: top }, true)))
+          .child(svg("mods/workspace-chrome/chevron-right.svg").size(11).flex_none()));
+    };
+    const checkouts = (g) => {
+      const runs = [];
+      for (const a of g.members) {
+        if (runs.at(-1)?.space === a.space) runs.at(-1).members.push(a);
+        else runs.push({ space: a.space, members: [a] });
+      }
+      // A worktree's rows sit a little right, under its line; the space's own stay put. The space's
+      // own rows first need no line, unless they're folded: then the line is what shows it.
+      return runs.flatMap((run, n) => {
+        const own = run.space === g.top, folded = this.folded.has(`wt-${run.space}`);
+        const rows = folded ? [] : run.members.flatMap((a, i) => withKids(a, i, own ? 0 : WT_INDENT));
+        return n === 0 && own && !folded ? rows : [checkout(g, run, n), ...rows];
+      });
+    };
 
     // A group's header; it folds the group. Folded, it says how many and the most urgent state.
     const header = (g) => {
       const open = !this.folded.has(g.id);
-      const top = g.members.reduce((m, a) => ((RANK[a.status] ?? 0) > (RANK[m] ?? 0) ? a.status : m), null);
+      const top = topStatus(g.members);
       return h_flex()
         .id(g.id)
         .px(8)
@@ -637,8 +809,8 @@ export default class Agents extends View {
           .child(svg("mods/workspace-chrome/chevron-right.svg").size(11).flex_none().text_color(t.dim)));
     };
     const rows = collapsed
-      ? list.flatMap(withKids)
-      : groups.flatMap((g) => [header(g), ...(this.folded.has(g.id) ? [] : g.members.flatMap(withKids))]);
+      ? list.flatMap((a, i) => withKids(a, i))
+      : groups.flatMap((g) => [header(g), ...(this.folded.has(g.id) ? [] : g.top ? checkouts(g) : g.members.flatMap((a, i) => withKids(a, i)))]);
 
     return v_flex()
       .size_full()
@@ -664,7 +836,7 @@ export default class Agents extends View {
                 .text_size(11)
                 .text_color(t.dim)
                 .hover((s) => s.text_color(t.foreground))
-                .on_click(() => openOverlay({ mod: "my-agents", kind: "popup", width: 200, height: 222, props: { sortMenu: true } }))
+                .on_click(() => openOverlay({ mod: "my-agents", kind: "popup", width: 200, height: 256, props: { sortMenu: true } }))
                 .tooltip(`Group by ${sort.label.toLowerCase()}, ${orderOf().label.toLowerCase()}`)
                 .child(svg(sort.icon).size(14)),
             ),
