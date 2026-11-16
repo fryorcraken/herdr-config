@@ -34,3 +34,13 @@ Not here, because herdr owns them: the shipped mods, themes and icons, `*.d.ts` 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
 
 `mods/my-agents` and `mods/my-tabs` started as copies of herdr's `agents` and `tabs` mods, which are Apache-2.0 ([herdrdev/herdr-app](https://github.com/herdrdev/herdr-app)). The parts that came from herdr stay under Apache-2.0.
+
+## PR badge
+
+Each Claude Code agent's row in the sidebar shows the pull request its session
+opened, colored by state: green for open, grey for draft, purple for merged, red
+for closed. A red dot means an open PR's checks are failing. Hover over the icon
+for the PR's number and title, or click it to open the PR.
+`mods/my-agents/prs.py` works this out every 90 s from Claude Code's session
+files, with one `gh api graphql` request. So it needs `gh` logged in. OpenCode
+sessions get no badge yet.

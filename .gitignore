@@ -2,3 +2,4 @@
 gpui-kit.d.ts
 # A mod's last load error.
 *.error
+__pycache__/

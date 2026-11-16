@@ -4,7 +4,7 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, nextCommand, openOverlay, closeOverlay, props, window, layout, home, hc, notify } from "herdr";
+import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, nextCommand, openOverlay, closeOverlay, props, window, layout, home, hc, notify, exec, appHome, checking } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -92,6 +92,16 @@ function duration(ms) {
   return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
+// personal: the pull request badge. prs.py (next to this file) finds the PRs each Claude Code
+// session opened and asks GitHub for their state; GitHub's own colors, the theme has none for this.
+const PR_EVERY = 90000;
+const PR_COLOR = { OPEN: "#3fb950", MERGED: "#a371f7", CLOSED: "#f85149" };
+const PR_WORD = { OPEN: "open", MERGED: "merged", CLOSED: "closed" };
+const CHECKS_WORD = { SUCCESS: "checks pass", FAILURE: "checks fail", ERROR: "checks fail", PENDING: "checks running", EXPECTED: "checks waiting" };
+// The PR a row shows: its newest open one, else its newest merged one, else its newest.
+const mainPr = (prs) => { const r = [...prs].reverse(); return r.find((p) => p.state === "OPEN") ?? r.find((p) => p.state === "MERGED") ?? r[0]; };
+const prLine = (p) => [`${p.repo}#${p.number}`, p.draft && p.state === "OPEN" ? "draft" : PR_WORD[p.state] ?? p.state.toLowerCase(), p.state === "OPEN" && CHECKS_WORD[p.checks], p.title].filter(Boolean).join(" · ");
+
 // The agent's icon from the app's program table: a one-color glyph or a picture.
 function icon(p, size, color) {
   if (!p?.icon) return null;
@@ -111,6 +121,11 @@ export default class Agents extends View {
     // Only a pick made from now on sorts the tabs, not the one remembered from last time.
     this.sortedTabsAt = shared("my-agents.sortTabsAt");
     cx.timer.every(30000, (cx) => cx.notify());
+    this.prs = JSON.parse(localStorage.getItem("prs") ?? "{}");
+    if (!checking()) {
+      this.loadPrs(cx);
+      cx.timer.every(PR_EVERY, (cx) => this.loadPrs(cx));
+    }
     // keys.json: "my-agents.next_blocked" / "my-agents.prev_blocked" jump between agents that
     // need you (blocked), in the order this list shows them, wrapping around.
     cx.spawn(async (cx) => {
@@ -176,6 +191,48 @@ export default class Agents extends View {
     const next = order[i < 0 ? (dir > 0 ? 0 : order.length - 1) : (i + dir + order.length) % order.length];
     const a = list.find((x) => x.address === next);
     if (a) run("pane.focus", { pane: a.pane });
+  }
+
+  // One run at a time: a slow GitHub shouldn't stack them up.
+  loadPrs(cx) {
+    if (this.prsLoading) return;
+    this.prsLoading = true;
+    exec("python3", ["-I", `${appHome()}/mods/my-agents/prs.py`], { timeout: 60000 })
+      .then((r) => {
+        if (r.code !== 0) return console.error("my-agents: prs.py", r.stderr.trim());
+        this.prs = JSON.parse(r.stdout);
+        localStorage.setItem("prs", r.stdout);
+        cx.notify();
+      })
+      .catch((e) => console.error("my-agents: prs.py", String(e)))
+      .finally(() => { this.prsLoading = false; });
+  }
+
+  // The row's PR icon, colored by state; a red dot when an open PR's checks fail. Clicking opens it.
+  prBadge(t, a) {
+    const prs = this.prs?.[a.address];
+    if (!prs?.length) return null;
+    const p = mainPr(prs);
+    const color = p.state === "OPEN" && p.draft ? t.dim : PR_COLOR[p.state] ?? t.dim;
+    const failing = p.state === "OPEN" && (p.checks === "FAILURE" || p.checks === "ERROR");
+    const others = prs.filter((x) => x !== p);
+    return h_flex()
+      .id(`pr-${a.address}`)
+      .flex_none()
+      .p(2)
+      .gap(2)
+      .rounded(4)
+      .items_center()
+      .cursor_pointer()
+      .hover((s) => s.bg(t.hover))
+      .tooltip([prLine(p), ...others.map(prLine)].join("\n"))
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        cx.open_url(p.url);
+      })
+      .child(svg("mods/my-agents/git-pull-request.svg").size(13).flex_none().text_color(color))
+      .when(failing, (el) => el.child(div().size(5).flex_none().rounded(3).bg(PR_COLOR.CLOSED)))
+      .when(others.length > 0, (el) => el.child(div().text_size(10).text_color(t.dim).child(`+${others.length}`)));
   }
 
   since(a) {
@@ -484,6 +541,7 @@ export default class Agents extends View {
       const when = a.shell ? 0 : this.since(a);
       const idle = (a.status === "idle" || a.shell) && !a.focused;
       const isPinned = a.pinned;
+      const pr = a.shell ? null : this.prBadge(t, a);
       const pin = div()
         .id(`pin-${a.address}`)
         .flex_none()
@@ -534,6 +592,7 @@ export default class Agents extends View {
           .child(div().min_w(0).max_w(full && more ? 120 : 200).truncate().text_color(idle ? t.muted : t.foreground).child(name))
           .when(full && Boolean(more), el => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(`\u00b7 ${more}`))))
         .when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
+        .when(Boolean(pr), el => el.child(pr))
         .when(subs.length > 0, el => el.child(fold(a, subs)))
         .when(this.hovered === a.address, el => el.child(pin))
         .when(this.hovered !== a.address && Boolean(when), el => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when))))
