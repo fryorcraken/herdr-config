@@ -51,11 +51,16 @@ function leadPanes(all) {
   return leads;
 }
 
-function title(tab, l) {
+// A terminal's own title when it says something (not the program's name, a path or user@host), else null.
+function told(l) {
   const prog = l?.program?.name;
   const live = clean(l?.title);
-  const telling = live && live !== prog && !/^[~/]|^[A-Za-z]:\\/.test(live) && !live.includes("@") && live.toLowerCase() !== l?.program?.key;
-  return (tab.name === prog || !tab.named) && telling ? live : tab.name;
+  return live && live !== prog && !/^[~/]|^[A-Za-z]:\\/.test(live) && !live.includes("@") && live.toLowerCase() !== l?.program?.key ? live : null;
+}
+
+function title(tab, l) {
+  const live = told(l);
+  return (tab.name === l?.program?.name || !tab.named) && live ? live : tab.name;
 }
 const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
 const STATUS_AT = { 4: "blocked", 3: "done", 2: "working", 1: "idle" };
@@ -445,7 +450,17 @@ export default class Agents extends View {
       notify({ title: "Not renamed", body: `${r.program} is working. Rename it once it stops.`, level: "warning" });
       return;
     }
-    hc(["send", r.address, `/rename ${name}`]).then(failed);
+    // personal: once renamed, the session's title is the name. A name its tab (when the session is
+    // the only agent there) or its terminal had from before goes, so nothing shows the old one.
+    const me = agents().find((x) => x.address === r.address);
+    const tab = me && agents().filter((x) => x.tab === me.tab).length === 1 ? spaces().flatMap((s) => s.tabs).find((tb) => tb.id === me.tab) : null;
+    const labelled = Boolean(terminals().find((x) => x.address === r.address)?.labels?.[NAME]);
+    hc(["send", r.address, `/rename ${name}`]).then((res) => {
+      failed(res);
+      if (res.code !== 0) return;
+      if (tab?.named) run("tab.rename", { id: tab.id, name: "" });
+      if (labelled) hc(["label", r.address, `${NAME}=`]).then(failed);
+    });
   }
 
   renameDialog(t) {
@@ -617,6 +632,11 @@ export default class Agents extends View {
     const ownsTab = new Set();
     this.ownsTab = ownsTab;
     const labels = new Map(list.map(a => {
+      // personal: Claude Code and OpenCode read as their session's title, which is what renaming
+      // them changes. A tab name or own name left from before (a session that ran there before a
+      // restart) only stands in while the session has no title.
+      const session = RENAMES.has(a.program?.key) ? told(a) : null;
+      if (session) return [a.address, session];
       const own = this.names.get(a.address);
       if (own) return [a.address, own];
       const tab = tabs.get(a.tab);

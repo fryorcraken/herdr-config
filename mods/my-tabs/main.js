@@ -8,6 +8,9 @@ import { spaces, panes, run, openOverlay, theme, window, shared, layout, setting
 // named "[herdr] config" must keep its bracket. "~" stays so "~/src" still reads as a path.
 const clean = (s) => (s ?? "").replace(/^(?:(?!~)[\p{S}\p{Z}\p{Co}\s\u00b7\u2022])+/u, "").replace(/^OC \| /, "").trim(); // personal: drop OpenCode's "OC | " prefix
 
+// personal: agents whose session takes "/rename <name>", as in my-agents (which shows the dialog).
+const RENAMES = new Set(["claude", "opencode"]);
+
 function find(node, id) {
   if (node?.id === id) return node;
   for (const child of node?.children ?? []) {
@@ -74,11 +77,19 @@ export default class Tabs extends View {
       const busy = panes().find(p => p.tab === c.id && p.program && !p.program.shell && !p.program.agent)?.program?.name;
       const dir = where(term?.cwd);
       const auto = busy && dir ? `${busy} · ${dir}` : busy ?? dir ?? program?.name ?? "Terminal";
-      const name = c.named ? c.name : telling ? live : auto;
+      // personal: a tab whose only agent is Claude Code or OpenCode reads as that session's title, as
+      // its sidebar row does, and a double click renames the session. A tab name left from before (a
+      // session that ran there before a restart) only stands in while the session has no title.
+      const session = RENAMES.has(lead?.program?.key) && panes().filter(p => p.tab === c.id && p.program?.agent).length === 1;
+      const name = session && telling ? live : c.named ? c.name : telling ? live : auto;
+      const rename = () => session
+        ? openOverlay({ mod: "my-agents", kind: "dialog", width: 420, height: 196,
+          props: { rename: { address: lead.terminal, program: lead.program.name, value: telling ? live : "" } } })
+        : run("tab.rename", { id: c.id });
       return h_flex().id(`tab-${c.id}`).h(29).px(10).gap(7).rounded(7).items_center().flex_none().text_size(12.8)
         .border(1).border_color(c.active ? t.border : t.chrome).bg(c.active ? t.raised : t.chrome).text_color(c.active ? t.foreground : t.muted)
         .hover(s => s.bg(t.hover))
-        .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressed = i; if (e.click_count === 2) run("tab.rename", { id: c.id }); })
+        .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressed = i; if (e.click_count === 2) rename(); })
         .on_mouse_up("left", () => {
           const from = this.pressed; this.pressed = null;
           if (from !== null && from !== i) run("tab.move", { id: shown[from].id, index: space.tabs.findIndex(x => x.id === c.id) + 1 });
