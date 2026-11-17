@@ -57,11 +57,10 @@
     "ctrl-shift-x": "pane.close",
     "ctrl-shift-z": "pane.zoom",
     "ctrl-shift-l": "layout.switch",
-    "f2": "tab.rename",
+    "f2": "my-agents.rename",
     "shift-f2": "space.rename",
     "alt-shift-down": "my-agents.next_blocked",
-    "alt-shift-up": "my-agents.prev_blocked",
-    "ctrl-shift-r": "my-agents.rename"
+    "alt-shift-up": "my-agents.prev_blocked"
   },
   "terminal": {
     "ctrl-backspace": "send:\u0017",
